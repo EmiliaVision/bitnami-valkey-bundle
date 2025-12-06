@@ -1,0 +1,107 @@
+# Helm values for Valkey with Sentinel and JSON/Bloom modules
+# Usage: helm install valkey oci://registry-1.docker.io/bitnamicharts/valkey -f values.yaml
+
+# Allow custom images (non-Bitnami)
+global:
+  security:
+    allowInsecureImages: true
+
+# Custom image with JSON and Bloom modules
+image:
+  registry: us-east1-docker.pkg.dev
+  repository: YOUR-PROJECT/YOUR-REPO/valkey-modules
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Architecture: replication is required for Sentinel
+architecture: replication
+
+# Authentication
+auth:
+  enabled: true
+  sentinel: true
+  # password: ""  # Leave empty to auto-generate, or specify
+
+# Primary configuration
+master:
+  # Load JSON and Bloom modules
+  configuration: |
+    loadmodule /opt/bitnami/valkey/modules/libjson.so
+    loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  persistence:
+    enabled: true
+    size: 8Gi
+
+# Replica configuration
+replica:
+  replicaCount: 2
+
+  # Load JSON and Bloom modules on replicas too
+  configuration: |
+    loadmodule /opt/bitnami/valkey/modules/libjson.so
+    loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  persistence:
+    enabled: true
+    size: 8Gi
+
+# Sentinel configuration
+sentinel:
+  enabled: true
+
+  # Quorum: number of sentinels that must agree the master is down
+  # For 3 sentinels, quorum of 2 is recommended
+  quorum: 2
+
+  # Time before considering master as down (ms)
+  downAfterMilliseconds: 10000
+
+  # Failover timeout (ms)
+  failoverTimeout: 60000
+
+  # Replicas that sync in parallel after failover
+  parallelSyncs: 1
+
+  # Wait for failover before shutdown
+  valkeyShutdownWaitFailover: true
+
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "100m"
+
+# Prometheus metrics
+metrics:
+  enabled: false
+  # If you enable metrics:
+  # serviceMonitor:
+  #   enabled: true
+
+# Network Policy
+networkPolicy:
+  enabled: false
+
+# Pod Disruption Budget for high availability
+pdb:
+  create: true
+  minAvailable: 1

@@ -1,0 +1,137 @@
+# Docker Compose for local testing of Valkey with modules and Sentinel
+# Usage: docker-compose up -d
+
+services:
+  # Valkey Master
+  valkey-master:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    container_name: valkey-master
+    environment:
+      - VALKEY_REPLICATION_MODE=primary
+      - VALKEY_PASSWORD=secretpassword
+      - VALKEY_EXTRA_FLAGS=--loadmodule /opt/bitnami/valkey/modules/libjson.so --loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+    ports:
+      - "6380:6379"
+    volumes:
+      - valkey-master-data:/bitnami/valkey/data
+    networks:
+      - valkey-net
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "secretpassword", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Valkey Replica 1
+  valkey-replica-1:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    container_name: valkey-replica-1
+    environment:
+      - VALKEY_REPLICATION_MODE=replica
+      - VALKEY_PRIMARY_HOST=valkey-master
+      - VALKEY_PRIMARY_PORT_NUMBER=6379
+      - VALKEY_PRIMARY_PASSWORD=secretpassword
+      - VALKEY_PASSWORD=secretpassword
+      - VALKEY_EXTRA_FLAGS=--loadmodule /opt/bitnami/valkey/modules/libjson.so --loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+    depends_on:
+      valkey-master:
+        condition: service_healthy
+    networks:
+      - valkey-net
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "secretpassword", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Valkey Replica 2
+  valkey-replica-2:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    container_name: valkey-replica-2
+    environment:
+      - VALKEY_REPLICATION_MODE=replica
+      - VALKEY_PRIMARY_HOST=valkey-master
+      - VALKEY_PRIMARY_PORT_NUMBER=6379
+      - VALKEY_PRIMARY_PASSWORD=secretpassword
+      - VALKEY_PASSWORD=secretpassword
+      - VALKEY_EXTRA_FLAGS=--loadmodule /opt/bitnami/valkey/modules/libjson.so --loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+    depends_on:
+      valkey-master:
+        condition: service_healthy
+    networks:
+      - valkey-net
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "secretpassword", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Sentinel 1
+  valkey-sentinel-1:
+    image: bitnami/valkey-sentinel:latest
+    container_name: valkey-sentinel-1
+    environment:
+      - VALKEY_PRIMARY_HOST=valkey-master
+      - VALKEY_PRIMARY_PORT_NUMBER=6379
+      - VALKEY_PRIMARY_PASSWORD=secretpassword
+      - VALKEY_SENTINEL_DOWN_AFTER_MILLISECONDS=10000
+      - VALKEY_SENTINEL_FAILOVER_TIMEOUT=60000
+      - VALKEY_SENTINEL_QUORUM=2
+    ports:
+      - "26379:26379"
+    depends_on:
+      valkey-master:
+        condition: service_healthy
+    networks:
+      - valkey-net
+
+  # Sentinel 2
+  valkey-sentinel-2:
+    image: bitnami/valkey-sentinel:latest
+    container_name: valkey-sentinel-2
+    environment:
+      - VALKEY_PRIMARY_HOST=valkey-master
+      - VALKEY_PRIMARY_PORT_NUMBER=6379
+      - VALKEY_PRIMARY_PASSWORD=secretpassword
+      - VALKEY_SENTINEL_DOWN_AFTER_MILLISECONDS=10000
+      - VALKEY_SENTINEL_FAILOVER_TIMEOUT=60000
+      - VALKEY_SENTINEL_QUORUM=2
+    ports:
+      - "26380:26379"
+    depends_on:
+      valkey-master:
+        condition: service_healthy
+    networks:
+      - valkey-net
+
+  # Sentinel 3
+  valkey-sentinel-3:
+    image: bitnami/valkey-sentinel:latest
+    container_name: valkey-sentinel-3
+    environment:
+      - VALKEY_PRIMARY_HOST=valkey-master
+      - VALKEY_PRIMARY_PORT_NUMBER=6379
+      - VALKEY_PRIMARY_PASSWORD=secretpassword
+      - VALKEY_SENTINEL_DOWN_AFTER_MILLISECONDS=10000
+      - VALKEY_SENTINEL_FAILOVER_TIMEOUT=60000
+      - VALKEY_SENTINEL_QUORUM=2
+    ports:
+      - "26381:26379"
+    depends_on:
+      valkey-master:
+        condition: service_healthy
+    networks:
+      - valkey-net
+
+networks:
+  valkey-net:
+    driver: bridge
+
+volumes:
+  valkey-master-data:

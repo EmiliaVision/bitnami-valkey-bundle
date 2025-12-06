@@ -1,0 +1,79 @@
+# Helm values for local development (minikube/kind)
+# Usage: helm install valkey oci://registry-1.docker.io/bitnamicharts/valkey -f values-local.yaml
+
+# Allow custom images (non-Bitnami)
+global:
+  security:
+    allowInsecureImages: true
+
+# Custom image with modules
+image:
+  registry: docker.io
+  repository: your-username/valkey-modules
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+architecture: replication
+
+auth:
+  enabled: true
+  sentinel: true
+  password: "localpassword"
+
+master:
+  configuration: |
+    loadmodule /opt/bitnami/valkey/modules/libjson.so
+    loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+
+  # Reduced resources for local development
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+
+  persistence:
+    enabled: false  # Disabled for local testing
+
+replica:
+  replicaCount: 1  # Only 1 replica for local
+
+  configuration: |
+    loadmodule /opt/bitnami/valkey/modules/libjson.so
+    loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+
+  persistence:
+    enabled: false
+
+sentinel:
+  enabled: true
+  quorum: 1  # Lower quorum for local testing
+  downAfterMilliseconds: 5000
+  failoverTimeout: 30000
+
+  resources:
+    requests:
+      memory: "32Mi"
+      cpu: "25m"
+    limits:
+      memory: "64Mi"
+      cpu: "50m"
+
+metrics:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+pdb:
+  create: false  # Disabled for local

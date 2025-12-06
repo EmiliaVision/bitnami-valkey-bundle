@@ -1,0 +1,17 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+LICENSE
+
+# IDE
+.idea/
+.vscode/
+
+# Tests
+tests/
+
+# Helm
+helm/
