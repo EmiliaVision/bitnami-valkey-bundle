@@ -1,0 +1,185 @@
+name: Build and Publish Docker Image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bundle_version:
+        description: 'valkey-bundle version (e.g., 8-bookworm, 8.1.4-bookworm)'
+        required: false
+        default: '8-bookworm'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  VALKEY_VERSION: "9.0.0"
+  BUNDLE_VERSION: "9.0.0"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      valkey_version: ${{ steps.versions.outputs.valkey }}
+      bundle_version: ${{ steps.versions.outputs.bundle }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set versions from input
+        id: input_version
+        run: |
+          if [ "${{ github.event.inputs.bundle_version }}" != "" ]; then
+            echo "bundle=${{ github.event.inputs.bundle_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "bundle=${{ env.BUNDLE_VERSION }}" >> $GITHUB_OUTPUT
+          fi
+          echo "valkey=${{ env.VALKEY_VERSION }}" >> $GITHUB_OUTPUT
+
+      # Build first to extract version (amd64 only for speed)
+      - name: Build image to extract version
+        uses: docker/build-push-action@v5
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          push: false
+          load: true
+          tags: version-check:local
+          build-args: |
+            VALKEY_VERSION=${{ steps.input_version.outputs.valkey }}
+            BUNDLE_VERSION=${{ steps.input_version.outputs.bundle }}
+
+      - name: Extract versions from built image
+        id: versions
+        run: |
+          # Get Valkey version from image label or binary
+          VALKEY_VERSION=$(docker inspect version-check:local --format='{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || echo "")
+          if [ -z "$VALKEY_VERSION" ]; then
+            VALKEY_VERSION=$(docker run --rm version-check:local valkey-server --version | grep -oP 'v=\K[0-9.]+')
+          fi
+
+          # Get bundle version
+          BUNDLE_VERSION="${{ steps.input_version.outputs.bundle }}"
+          BUNDLE_SHORT=$(echo "$BUNDLE_VERSION" | grep -oP '^[0-9]+(\.[0-9]+)?')
+
+          echo "valkey=$VALKEY_VERSION" >> $GITHUB_OUTPUT
+          echo "bundle=$BUNDLE_VERSION" >> $GITHUB_OUTPUT
+          echo "bundle_short=$BUNDLE_SHORT" >> $GITHUB_OUTPUT
+
+          echo "Detected versions:"
+          echo "  Valkey: $VALKEY_VERSION"
+          echo "  Bundle: $BUNDLE_VERSION ($BUNDLE_SHORT)"
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.versions.outputs.valkey }},enable={{is_default_branch}}
+            type=raw,value=${{ steps.versions.outputs.valkey }}-bundle-${{ steps.versions.outputs.bundle_short }},enable={{is_default_branch}}
+            type=sha,prefix=
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push Docker image (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VALKEY_VERSION=${{ steps.input_version.outputs.valkey }}
+            BUNDLE_VERSION=${{ steps.input_version.outputs.bundle }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "## Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Valkey Version:** ${{ steps.versions.outputs.valkey }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Bundle Version:** ${{ steps.versions.outputs.bundle }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Published Tags" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.valkey_version }}"
+
+          echo "=== Testing image: $IMAGE ==="
+          docker pull $IMAGE
+
+          echo "=== Checking Valkey version ==="
+          docker run --rm $IMAGE valkey-server --version
+
+          echo "=== Starting container with modules ==="
+          docker run --rm -d --name valkey-test \
+            -e VALKEY_PASSWORD=testpassword \
+            -e VALKEY_EXTRA_FLAGS="--loadmodule /opt/bitnami/valkey/modules/libjson.so --loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so" \
+            $IMAGE
+
+          sleep 5
+
+          echo "=== Testing modules ==="
+          docker exec valkey-test valkey-cli -a testpassword --no-auth-warning MODULE LIST
+
+          echo "=== Testing JSON ==="
+          docker exec valkey-test valkey-cli -a testpassword --no-auth-warning JSON.SET test '$' '{"version":"${{ needs.build-and-push.outputs.valkey_version }}"}'
+          docker exec valkey-test valkey-cli -a testpassword --no-auth-warning JSON.GET test '$'
+
+          echo "=== Testing Bloom ==="
+          docker exec valkey-test valkey-cli -a testpassword --no-auth-warning BF.ADD filter item1
+          result=$(docker exec valkey-test valkey-cli -a testpassword --no-auth-warning BF.EXISTS filter item1)
+
+          if [ "$result" != "1" ]; then
+            echo "ERROR: Bloom filter test failed!"
+            docker stop valkey-test
+            exit 1
+          fi
+
+          echo "=== All tests passed! ==="
+          docker stop valkey-test
