@@ -1,49 +1,82 @@
 # Bitnami Valkey Bundle
 
-Extend Bitnami's Valkey image with modules (JSON, Bloom) from **valkey-bundle** + Sentinel for High Availability.
+Valkey 9.0.0 with Bitnami-style configuration, JSON/Bloom modules, and Sentinel for High Availability.
+
+## Quick Start
+
+```bash
+# Use pre-built image from GitHub Container Registry
+docker pull ghcr.io/emiliavision/bitnami-valkey-bundle:9.0.0
+
+# Or start complete local stack (1 primary + 2 replicas + 3 sentinels)
+docker compose up -d
+```
+
+## Image
+
+| Registry | Image | Tags |
+|----------|-------|------|
+| ghcr.io | `ghcr.io/emiliavision/bitnami-valkey-bundle` | `latest`, `9.0.0`, `9.0.0-bundle-9.0` |
+
+### What's Included
+
+- **Valkey 9.0.0** - Redis-compatible in-memory data store
+- **JSON Module** - Native JSON data type support
+- **Bloom Module** - Probabilistic data structures
+- **Bitnami Scripts** - Environment variable configuration (VALKEY_PASSWORD, etc.)
+- **Multi-arch** - linux/amd64 and linux/arm64
+
+## Kubernetes Deployment
+
+```bash
+# Deploy with Bitnami Helm chart
+helm install valkey oci://registry-1.docker.io/bitnamicharts/valkey \
+  -f helm/values.yaml \
+  -n valkey --create-namespace
+```
+
+See [helm/values.yaml](helm/values.yaml) for production configuration or [helm/values-test.yaml](helm/values-test.yaml) for testing.
+
+## Sentinel Failover (Tested on GKE Autopilot)
+
+Comprehensive failover testing completed with the following results:
+
+| Test | Result | Recovery Time |
+|------|--------|---------------|
+| Kill primary (node-0) | Sentinel promotes replica | ~5 sec |
+| Kill new primary (node-1) | Sentinel promotes back | ~8 sec |
+| Data integrity | Preserved through double failover | - |
+| Ex-master rejoins | Automatically becomes replica | ~30 sec |
+| Modules post-failover | JSON and Bloom work correctly | - |
+
+This configuration is suitable for GCP Autopilot node evacuations.
+
+---
 
 ## Lessons Learned
 
-### 1. Compile vs Precompiled Binaries
+### 1. glibc Compatibility (Critical)
 
-**Compile from source** (initial approach):
-- Slow (~2 min build time)
-- Risk of binary incompatibility between systems
-- More control but more maintenance
+We use a **hybrid Dockerfile** approach because:
+- `valkey-bundle:9.0.0` requires glibc 2.38+ (Debian Trixie)
+- `bitnami/valkey:latest` uses Photon OS with glibc 2.36
 
-**Use valkey-bundle** (final approach - recommended):
-- Fast (~5 sec build time)
-- Tested and compatible modules
-- Includes JSON, Bloom, Search, LDAP
+**Solution**: Use `valkey/valkey:9.0.0` (Debian Trixie, glibc 2.41) as base, copy Bitnami scripts and bundle modules.
 
 ```dockerfile
-# RECOMMENDED: Copy from valkey-bundle
-FROM valkey/valkey-bundle:8-bookworm AS bundle
-FROM bitnami/valkey:latest
+FROM valkey/valkey-bundle:9.0.0 AS bundle
+FROM bitnami/valkey:latest AS bitnami
+FROM valkey/valkey:9.0.0
+
+# Copy Bitnami scripts for env var support
+COPY --from=bitnami /opt/bitnami/scripts/ /opt/bitnami/scripts/
+
+# Copy modules from bundle
 COPY --from=bundle /usr/lib/valkey/libjson.so /opt/bitnami/valkey/modules/
+COPY --from=bundle /usr/lib/valkey/libvalkey_bloom.so /opt/bitnami/valkey/modules/
 ```
 
-### 2. glibc Compatibility (IMPORTANT)
-
-Bitnami Valkey uses **Photon OS with glibc 2.36**. Modules must be compatible:
-
-| Bundle Tag | Base | glibc | Compatible with Bitnami? |
-|------------|------|-------|--------------------------|
-| `8-alpine` | Alpine | musl | NO - Error: `libc.musl-x86_64.so.1 not found` |
-| `8-trixie` | Debian 13 | 2.38 | NO - Error: `GLIBC_2.38 not found` |
-| `8-bookworm` | Debian 12 | 2.36 | YES |
-
-**Rule**: Use `bookworm` for Bitnami compatibility.
-
-### 3. Bitnami Valkey Base Image
-
-Bitnami Valkey image changed from Debian (minideb) to **Photon OS** (VMware):
-
-- Cannot use `apt-get` or `install_packages`
-- Uses glibc 2.36
-- Non-root user: 1001
-
-### 4. Nomenclature: Master -> Primary
+### 2. Nomenclature: Master -> Primary
 
 Bitnami updated the nomenclature in October 2024:
 
@@ -237,44 +270,43 @@ global:
     allowInsecureImages: true
 ```
 
-## High Availability Testing (Failover)
+## CI/CD
 
-Tested on GKE Autopilot with successful results:
+GitHub Actions automatically builds and publishes to ghcr.io on:
+- Push to `main` branch
+- Tags matching `v*`
+- Manual trigger (workflow_dispatch)
 
-| Test | Result | Recovery Time |
-|------|--------|---------------|
-| Delete REPLICA | Kubernetes recreates pod, reconnects to master | ~30 sec |
-| Delete PRIMARY | Sentinel promotes replica to master automatically | ~10 sec |
-| Data integrity | Data intact after failover | - |
-| Modules post-failover | JSON and Bloom work correctly | - |
-| Reverse replication | Ex-master becomes replica automatically | - |
+See [.github/workflows/build-publish.yml](.github/workflows/build-publish.yml).
 
-### Simulate Primary Failure (Failover)
+## Testing Failover in Kubernetes
 
 ```bash
-# Check initial state
-kubectl exec -n valkey valkey-node-0 -c valkey -- valkey-cli -a PASSWORD ROLE
+# Deploy to test namespace
+helm install valkey-test oci://registry-1.docker.io/bitnamicharts/valkey \
+  -f helm/values-test.yaml -n valkey-test --create-namespace
 
-# Delete primary to force failover
-kubectl delete pod -n valkey valkey-node-0
+# Check current master
+kubectl exec -n valkey-test valkey-test-node-0 -c sentinel -- \
+  valkey-cli -p 26379 -a PASSWORD --no-auth-warning SENTINEL get-master-addr-by-name myprimary
 
-# Sentinel detects failure and promotes replica (~10 sec)
-kubectl exec -n valkey valkey-node-1 -c sentinel -- \
-  valkey-cli -p 26379 -a PASSWORD SENTINEL get-master-addr-by-name myprimary
+# Write test data
+kubectl exec -n valkey-test valkey-test-node-0 -c valkey -- \
+  valkey-cli -a PASSWORD --no-auth-warning JSON.SET test '$' '{"failover":"test"}'
 
-# Verify new master
-kubectl exec -n valkey valkey-node-1 -c valkey -- valkey-cli -a PASSWORD ROLE
-```
+# Kill master to trigger failover
+kubectl delete pod -n valkey-test valkey-test-node-0 --force --grace-period=0
 
-### Verify Modules Work Post-Failover
+# Wait ~10 seconds, then verify new master
+kubectl exec -n valkey-test valkey-test-node-1 -c valkey -- \
+  valkey-cli -a PASSWORD --no-auth-warning ROLE
 
-```bash
-# On the new master
-kubectl exec -n valkey valkey-node-1 -c valkey -- \
-  valkey-cli -a PASSWORD MODULE LIST
+# Verify data integrity
+kubectl exec -n valkey-test valkey-test-node-1 -c valkey -- \
+  valkey-cli -a PASSWORD --no-auth-warning JSON.GET test '$'
 
-kubectl exec -n valkey valkey-node-1 -c valkey -- \
-  valkey-cli -a PASSWORD JSON.SET test '$' '{"failover":"ok"}'
+# Cleanup
+kubectl delete namespace valkey-test
 ```
 
 ## References

@@ -107,6 +107,41 @@ docker pull ghcr.io/emiliavision/bitnami-valkey-bundle:9.0.0
 
 **Nota sobre versiones**: Bitnami solo ofrece `latest` gratis en Docker Hub (sin tags de versión). Por eso hacemos build propio y publicamos en ghcr.io con versionado automático.
 
+## Kubernetes Testing (GKE Autopilot)
+
+```bash
+# Deploy test environment
+helm install valkey-test oci://registry-1.docker.io/bitnamicharts/valkey \
+  -f helm/values-test.yaml -n valkey-test --create-namespace
+
+# Check pods
+kubectl get pods -n valkey-test
+
+# Verify modules
+kubectl exec -n valkey-test valkey-test-node-0 -c valkey -- \
+  valkey-cli -a testpassword123 --no-auth-warning MODULE LIST
+
+# Test JSON
+kubectl exec -n valkey-test valkey-test-node-0 -c valkey -- \
+  valkey-cli -a testpassword123 --no-auth-warning JSON.SET test '$' '{"ok":true}'
+
+# Check Sentinel master
+kubectl exec -n valkey-test valkey-test-node-0 -c sentinel -- \
+  valkey-cli -p 26379 -a testpassword123 --no-auth-warning SENTINEL get-master-addr-by-name myprimary
+
+# Simulate failover (kill master)
+kubectl delete pod -n valkey-test valkey-test-node-0 --force --grace-period=0
+
+# Wait ~10s, verify new master
+kubectl exec -n valkey-test valkey-test-node-1 -c valkey -- \
+  valkey-cli -a testpassword123 --no-auth-warning ROLE
+
+# Cleanup
+kubectl delete namespace valkey-test
+```
+
+**Failover tested**: Double failover (kill node-0 → node-1 promoted → kill node-1 → node-0 promoted back). Data integrity preserved.
+
 ## Quick Verification
 
 ```bash

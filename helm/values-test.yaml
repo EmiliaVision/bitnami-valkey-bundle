@@ -1,0 +1,93 @@
+# Helm values for testing Valkey 9.0.0 with modules
+# Usage: helm install valkey-test oci://registry-1.docker.io/bitnamicharts/valkey -f values-test.yaml -n valkey-test
+
+# Allow custom images (non-Bitnami)
+global:
+  security:
+    allowInsecureImages: true
+
+# Custom image with JSON and Bloom modules (Valkey 9.0.0)
+image:
+  registry: ghcr.io
+  repository: emiliavision/bitnami-valkey-bundle
+  tag: "9.0.0"
+  pullPolicy: Always
+
+# Architecture: replication is required for Sentinel
+architecture: replication
+
+# Authentication
+auth:
+  enabled: true
+  sentinel: true
+  password: "testpassword123"
+
+# Primary configuration
+master:
+  # Load JSON and Bloom modules
+  configuration: |
+    loadmodule /opt/bitnami/valkey/modules/libjson.so
+    loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# Replica configuration
+replica:
+  replicaCount: 2
+
+  # Load JSON and Bloom modules on replicas too
+  configuration: |
+    loadmodule /opt/bitnami/valkey/modules/libjson.so
+    loadmodule /opt/bitnami/valkey/modules/libvalkey_bloom.so
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# Sentinel configuration - tuned for fast failover testing
+sentinel:
+  enabled: true
+  quorum: 2
+  downAfterMilliseconds: 5000      # 5 seconds - faster detection for testing
+  failoverTimeout: 30000            # 30 seconds
+  parallelSyncs: 1
+  valkeyShutdownWaitFailover: true
+
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "100m"
+
+# Prometheus metrics
+metrics:
+  enabled: false
+
+# Network Policy
+networkPolicy:
+  enabled: false
+
+# Pod Disruption Budget for high availability
+pdb:
+  create: true
+  minAvailable: 1
