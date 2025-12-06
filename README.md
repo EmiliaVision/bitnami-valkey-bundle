@@ -286,4 +286,4 @@ kubectl exec -n valkey valkey-node-1 -c valkey -- \
 
 ## License
 
-MIT
+Apache 2.0 - See [LICENSE](LICENSE) file for details.
